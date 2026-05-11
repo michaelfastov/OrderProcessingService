@@ -71,7 +71,20 @@ public class OrderProcessor
         catch (Exception ex)
         {
             await tx.RollbackAsync(CancellationToken.None);
-            await RecordFailureAsync(orderId, ex);
+
+            // Defensive: if recording the failure itself fails (e.g. DB still down),
+            // we log it but swallow so the original error remains the headline log line.
+            // The order will be left in Processing — a stuck-order reaper would clean it up.
+            try
+            {
+                await RecordFailureAsync(orderId, ex);
+            }
+            catch (Exception recordEx)
+            {
+                _logger.LogError(recordEx,
+                    "Failed to record failure for order {OrderId}; original error: {OriginalError}",
+                    orderId, ex.Message);
+            }
 
             OrderMetrics.FailedOrders.Inc();
             _logger.LogError(ex, "Failed to process order {OrderId}", orderId);
