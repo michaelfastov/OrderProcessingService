@@ -8,7 +8,7 @@ namespace OrderProcessingService.Processing;
 /// <summary>
 /// The "business logic" that runs asynchronously per order:
 ///   1. Validate items against current inventory (SKU exists, stock available).
-///   2. Verify the client-declared TotalAmount equals Σ (UnitPrice × Quantity).
+///   2. Verify the client-declared TotalAmount equals sum(UnitPrice * Quantity).
 ///   3. Calculate a tier discount based on the order total.
 ///   4. Mark the order as Processed (or Failed) and persist.
 ///
@@ -32,27 +32,26 @@ public class OrderProcessor
 
     public async Task ProcessAsync(Guid orderId, CancellationToken ct)
     {
+        var claimed = await _db.Orders
+            .Where(o => o.Id == orderId && o.Status == OrderStatus.Pending)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(o => o.Status, OrderStatus.Processing), ct);
+
+        if (claimed == 0)
+        {
+            _logger.LogInformation("Order {OrderId} was already claimed, completed, or failed; skipping", orderId);
+            return;
+        }
+
         var order = await _db.Orders
             .Include(o => o.Items)
             .FirstOrDefaultAsync(o => o.Id == orderId, ct);
 
         if (order is null)
         {
-            _logger.LogWarning("Order {OrderId} not found, skipping", orderId);
+            _logger.LogWarning("Order {OrderId} not found after claim, skipping", orderId);
             return;
         }
-
-        if (order.Status == OrderStatus.Processed)
-        {
-            _logger.LogInformation("Order {OrderId} already processed, skipping (idempotent)", orderId);
-            return;
-        }
-
-        // Commit "Processing" eagerly (outside the transaction) so the state is
-        // observable to anyone polling the order — even if the work below fails
-        // and the transaction rolls back.
-        order.Status = OrderStatus.Processing;
-        await _db.SaveChangesAsync(ct);
 
         await using var tx = await _db.Database.BeginTransactionAsync(ct);
         try
@@ -76,15 +75,16 @@ public class OrderProcessor
 
             OrderMetrics.FailedOrders.Inc();
             _logger.LogError(ex, "Failed to process order {OrderId}", orderId);
-            // Swallow — the failure is already persisted and counted.
+            // Swallow; the failure is already persisted and counted.
         }
     }
 
     private async Task ProcessOrderItemsAsync(Order order, CancellationToken ct)
     {
-        // 1: validate against inventory (read-only) BEFORE mutating any state.
+        // 1: validate against inventory (read-only, untracked) BEFORE mutating any state.
         var skus = order.Items.Select(i => i.Sku).Distinct().ToList();
         var inventory = await _db.Inventory
+            .AsNoTracking()
             .Where(i => skus.Contains(i.Sku))
             .ToDictionaryAsync(i => i.Sku, ct);
 
@@ -101,7 +101,7 @@ public class OrderProcessor
                     $"Insufficient stock for SKU '{item.Sku}' (have {inv.StockQuantity}, need {item.Quantity})");
         }
 
-        // 2: verify the client-declared total matches Σ (UnitPrice × Quantity).
+        // 2: verify the client-declared total matches sum(UnitPrice * Quantity).
         var computedTotal = order.Items.Sum(i => i.UnitPrice * i.Quantity);
         if (Math.Abs(computedTotal - order.TotalAmount) > TotalTolerance)
         {
@@ -109,10 +109,21 @@ public class OrderProcessor
                 $"TotalAmount mismatch: declared={order.TotalAmount}, computed={computedTotal}");
         }
 
-        // 3: decrement inventory stock now that all checks have passed.
+        // 3: atomically decrement inventory stock for each item.
+        // The stock guard in the WHERE clause makes overselling impossible at the DB level
+        // even under concurrent workers: if another transaction depleted stock between our
+        // validation read and this UPDATE, the row count comes back as 0 and we throw.
         foreach (var item in order.Items)
         {
-            inventory[item.Sku].StockQuantity -= item.Quantity;
+            var rowsAffected = await _db.Inventory
+                .Where(i => i.Sku == item.Sku && i.StockQuantity >= item.Quantity)
+                .ExecuteUpdateAsync(
+                    s => s.SetProperty(i => i.StockQuantity, i => i.StockQuantity - item.Quantity),
+                    ct);
+
+            if (rowsAffected == 0)
+                throw new InvalidOperationException(
+                    $"Insufficient stock for SKU '{item.Sku}' (concurrent depletion or stock changed)");
         }
 
         // 4: discount tier on the verified total + mark Processed.

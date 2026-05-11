@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 using RabbitMQ.Client;
 
@@ -9,22 +8,20 @@ public interface IOrderPublisher
     void Publish(ProcessOrderMessage message);
 }
 
-public sealed class OrderPublisher : IOrderPublisher, IDisposable
+public sealed class OrderPublisher : IOrderPublisher
 {
     private readonly RabbitMqConnection _connection;
     private readonly ILogger<OrderPublisher> _logger;
-    private readonly Lazy<IModel> _channel;
 
     public OrderPublisher(RabbitMqConnection connection, ILogger<OrderPublisher> logger)
     {
         _connection = connection;
         _logger = logger;
-        _channel = new Lazy<IModel>(() => _connection.CreateChannelAndDeclareQueue());
     }
 
     public void Publish(ProcessOrderMessage message)
     {
-        var channel = _channel.Value;
+        using var channel = _connection.CreateChannelAndDeclareQueue();
         var body = JsonSerializer.SerializeToUtf8Bytes(message);
         var properties = channel.CreateBasicProperties();
         properties.Persistent = true;
@@ -38,14 +35,5 @@ public sealed class OrderPublisher : IOrderPublisher, IDisposable
             body: body);
 
         _logger.LogInformation("Published order {OrderId} to queue {Queue}", message.OrderId, _connection.QueueName);
-    }
-
-    public void Dispose()
-    {
-        if (_channel.IsValueCreated)
-        {
-            try { _channel.Value.Dispose(); }
-            catch { /* swallow on shutdown */ }
-        }
     }
 }
