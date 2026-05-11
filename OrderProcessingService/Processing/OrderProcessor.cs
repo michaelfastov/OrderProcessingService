@@ -57,7 +57,7 @@ public class OrderProcessor
         try
         {
             // Simulated work to make the async nature visible during demos.
-            await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
+            await Task.Delay(TimeSpan.FromMilliseconds(15000), ct);
 
             await ProcessOrderItemsAsync(order, ct);
 
