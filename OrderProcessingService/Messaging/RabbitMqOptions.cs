@@ -4,9 +4,9 @@ public class RabbitMqOptions
 {
     public const string SectionName = "RabbitMq";
 
-    public string Host { get; set; } = "localhost";
-    public int Port { get; set; } = 5672;
-    public string User { get; set; } = "guest";
-    public string Password { get; set; } = "guest";
-    public string Queue { get; set; } = "orders.process";
+    public required string Host { get; set; }
+    public required int Port { get; set; }
+    public required string User { get; set; }
+    public required string Password { get; set; }
+    public required string Queue { get; set; }
 }

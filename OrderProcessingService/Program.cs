@@ -21,8 +21,16 @@ try
         .WriteTo.Console());
 
     // -- Configuration --
-    builder.Services.Configure<RabbitMqOptions>(
-        builder.Configuration.GetSection(RabbitMqOptions.SectionName));
+    builder.Services
+        .AddOptions<RabbitMqOptions>()
+        .Bind(builder.Configuration.GetSection(RabbitMqOptions.SectionName))
+        .Validate(o => !string.IsNullOrWhiteSpace(o.Host)
+                       && o.Port > 0
+                       && !string.IsNullOrWhiteSpace(o.User)
+                       && !string.IsNullOrWhiteSpace(o.Password)
+                       && !string.IsNullOrWhiteSpace(o.Queue),
+                  "RabbitMq configuration is missing required values.")
+        .ValidateOnStart();
 
     // -- EF Core / PostgreSQL --
     builder.Services.AddDbContext<AppDbContext>(opt =>
