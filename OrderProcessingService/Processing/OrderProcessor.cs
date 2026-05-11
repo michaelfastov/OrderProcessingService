@@ -7,8 +7,8 @@ namespace OrderProcessingService.Processing;
 
 /// <summary>
 /// The "business logic" that runs asynchronously per order:
-///   1. Validate items against current inventory.
-///   2. Enrich items with the latest unit price from inventory.
+///   1. Validate items against current inventory (SKU exists, stock available).
+///   2. Verify the client-declared TotalAmount equals Σ (UnitPrice × Quantity).
 ///   3. Calculate a tier discount based on the order total.
 ///   4. Mark the order as Processed (or Failed) and persist.
 /// </summary>
@@ -78,9 +78,14 @@ public class OrderProcessor
         }
     }
 
+    /// <summary>
+    /// Cents-level tolerance to absorb harmless rounding drift between client and server.
+    /// </summary>
+    private const decimal TotalTolerance = 0.01m;
+
     private async Task ProcessOrderItemsAsync(Order order, CancellationToken ct)
     {
-        // 1: validate (read-only against inventory) BEFORE mutating any state.
+        // 1: validate against inventory (read-only) BEFORE mutating any state.
         var skus = order.Items.Select(i => i.Sku).Distinct().ToList();
         var inventory = await _db.Inventory
             .Where(i => skus.Contains(i.Sku))
@@ -92,26 +97,32 @@ public class OrderProcessor
                 throw new InvalidOperationException($"Unknown SKU '{item.Sku}'");
             if (item.Quantity <= 0)
                 throw new InvalidOperationException($"Invalid quantity {item.Quantity} for SKU '{item.Sku}'");
+            if (item.UnitPrice < 0m)
+                throw new InvalidOperationException($"Invalid unit price {item.UnitPrice} for SKU '{item.Sku}'");
             if (inv.StockQuantity < item.Quantity)
                 throw new InvalidOperationException(
                     $"Insufficient stock for SKU '{item.Sku}' (have {inv.StockQuantity}, need {item.Quantity})");
         }
 
-        // 2: enrich items + decrement stock now that all checks have passed.
-        decimal recomputedTotal = 0m;
-        foreach (var item in order.Items)
+        // 2: verify the client-declared total matches Σ (UnitPrice × Quantity).
+        var computedTotal = order.Items.Sum(i => i.UnitPrice * i.Quantity);
+        if (Math.Abs(computedTotal - order.TotalAmount) > TotalTolerance)
         {
-            var inv = inventory[item.Sku];
-            item.UnitPrice = inv.UnitPrice;
-            recomputedTotal += inv.UnitPrice * item.Quantity;
-            inv.StockQuantity -= item.Quantity;
+            throw new InvalidOperationException(
+                $"TotalAmount mismatch: declared={order.TotalAmount}, computed={computedTotal}");
         }
 
-        // 3: discount tier.
-        var discount = CalculateDiscount(recomputedTotal);
-        order.TotalAmount = recomputedTotal;
+        // 3: decrement inventory stock now that all checks have passed.
+        foreach (var item in order.Items)
+        {
+            inventory[item.Sku].StockQuantity -= item.Quantity;
+        }
+
+        // 4: discount tier on the verified total.
+        var discount = CalculateDiscount(computedTotal);
+        order.TotalAmount = computedTotal;
         order.DiscountAmount = discount;
-        order.FinalAmount = recomputedTotal - discount;
+        order.FinalAmount = computedTotal - discount;
         order.Status = OrderStatus.Processed;
         order.ProcessedAt = DateTime.UtcNow;
 

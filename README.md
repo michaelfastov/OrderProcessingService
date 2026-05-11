@@ -77,13 +77,15 @@ curl -X POST http://localhost:8080/api/orders \
   -H "Content-Type: application/json" \
   -d '{
         "customerId": "cust-123",
-        "totalAmount": 0,
+        "totalAmount": 378.98,
         "items": [
-          { "sku": "SKU-001", "quantity": 2 },
-          { "sku": "SKU-003", "quantity": 1 }
+          { "sku": "SKU-001", "quantity": 2, "unitPrice": 24.99 },
+          { "sku": "SKU-003", "quantity": 1, "unitPrice": 329.00 }
         ]
       }'
 ```
+
+The worker verifies that `totalAmount == Σ (unitPrice × quantity)` (cents-level tolerance) and rejects mismatched orders by marking them `Failed`.
 
 Response: `202 Accepted` with the order body and a `Location` header pointing at the GET endpoint. The HTTP call does not block on processing.
 
@@ -121,7 +123,7 @@ Inventory is seeded on first startup with four products (`SKU-001` … `SKU-004`
 **Async pipeline.**
 1. `POST /api/orders` validates the payload, writes the order as `Pending` inside a single SaveChanges, publishes a `ProcessOrderMessage(OrderId)` to RabbitMQ, and returns `202 Accepted` with a `Location` header. The HTTP request never waits on the worker.
 2. `OrderConsumer` (a `BackgroundService`) subscribes to the queue with manual acks and `prefetchCount=5`. Each message is handled in a freshly-scoped DI container so the `DbContext` lifecycle stays correct.
-3. `OrderProcessor` reloads the order, validates each line against current `Inventory`, enriches each item with the authoritative `UnitPrice`, decrements stock, computes a tier discount (5% over $200, 10% over $500), and flips the row to `Processed` (or `Failed` with a reason). The counter increments on success.
+3. `OrderProcessor` reloads the order, validates each line against current `Inventory` (SKU exists, stock available), verifies `TotalAmount == Σ (UnitPrice × Quantity)` with a cents-level tolerance, decrements stock, computes a tier discount (5% over $200, 10% over $500), and flips the row to `Processed` (or `Failed` with a reason). The counter increments on success.
 
 **Idempotency.** The worker short-circuits if the order is already `Processed`. Combined with manual acks this gives at-least-once delivery without double-processing in the common case. A proper solution would use a separate `Outbox` to also avoid the "saved but never published" failure mode — out of scope for a demo.
 
@@ -132,7 +134,7 @@ Inventory is seeded on first startup with four products (`SKU-001` … `SKU-004`
 ## Assumptions
 
 - `CustomerId` is an opaque string — no separate Customer entity or auth.
-- `TotalAmount` in the request is informational; the authoritative total is recomputed by the worker from current inventory prices. (The task says each order has a `TotalAmount`, so the field is accepted but not trusted.)
+- The client supplies both `UnitPrice` per item and the order `TotalAmount`. The worker accepts these but verifies internal consistency (`Σ unitPrice × quantity == totalAmount`). It does **not** cross-check prices against `Inventory` — inventory is the source of truth for *stock*, not price. Cross-checking against an inventory price would be a one-line addition if desired.
 - Inventory is seeded once on first startup with four sample SKUs. There is no admin endpoint to mutate it — kept out for scope.
 - Only happy-path retries: RabbitMQ's automatic recovery handles transient connection drops; a failed *message* is not re-queued (see above).
 - "Database" connection failures at startup will crash the app — fine for a demo, in production you'd add a connection-retry policy (Polly + `EnableRetryOnFailure`).

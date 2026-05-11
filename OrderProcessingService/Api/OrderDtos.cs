@@ -12,8 +12,8 @@ public class CreateOrderRequest
     public List<CreateOrderItem> Items { get; set; } = new();
 
     /// <summary>
-    /// Client-declared total. The worker will recompute the authoritative total from
-    /// inventory; this field is accepted for parity with the task spec.
+    /// Client-declared total. The worker validates that this equals
+    /// Σ (item.UnitPrice × item.Quantity) and rejects mismatched orders.
     /// </summary>
     [Range(0, double.MaxValue)]
     public decimal TotalAmount { get; set; }
@@ -26,6 +26,9 @@ public class CreateOrderItem
 
     [Range(1, int.MaxValue)]
     public int Quantity { get; set; }
+
+    [Range(0.0, double.MaxValue)]
+    public decimal UnitPrice { get; set; }
 }
 
 public class OrderResponse

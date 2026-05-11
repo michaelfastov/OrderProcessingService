@@ -48,7 +48,7 @@ public class OrdersController : ControllerBase
                 Id = Guid.NewGuid(),
                 Sku = i.Sku,
                 Quantity = i.Quantity,
-                UnitPrice = 0m // filled in by worker from inventory
+                UnitPrice = i.UnitPrice
             }).ToList()
         };
 
