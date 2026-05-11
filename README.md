@@ -136,6 +136,22 @@ Inventory is seeded on first startup with four products (`SKU-001` … `SKU-004`
 - "Database" connection failures at startup will crash the app — fine for a demo, in production you'd add a connection-retry policy (Polly + `EnableRetryOnFailure`).
 - No authentication / authorization on the API.
 
+## Known limitations (intentional scope cuts)
+
+- **No stuck-order recovery.** `RecordFailureAsync` is wrapped in its own try-catch so a failed failure-write is logged rather than escalated, but if the DB is unreachable at that exact moment the order is left in `Processing` indefinitely. A real system would have a periodic reaper job that scans for orders stuck in `Processing` past a timeout and re-enqueues them.
+- **No dead-letter queue.** When the consumer fails to handle a message (deserialization error, DB unavailable during the initial claim), it calls `BasicNack(requeue: false)` and the message is dropped. A real system would declare the queue with an `x-dead-letter-exchange` argument and route poisoned/failed messages to a DLQ for inspection and replay.
+- **`/health` is a stub** — it returns `{ status: "ok" }` unconditionally and does not actually ping Postgres or RabbitMQ. For real operation you'd split into `/health/live` (process up) and `/health/ready` (dependencies pingable) using `AddHealthChecks().AddNpgSql(...).AddRabbitMQ(...)`.
+
+## Future improvements
+
+If this needed to harden toward production, the next pieces I'd add:
+
+- **Transactional outbox for publish.** Today `OrdersController.Submit` does a dual write — it commits the order row to Postgres and *then* publishes to RabbitMQ. If the publish throws after the commit (broker down, network blip), the order is persisted as `Pending` but no message ever lands on the queue, and it sits there forever. The fix is the outbox pattern: insert an `OutboxMessage` row inside the same `SaveChanges` as the order, then a separate background pump reads outbox rows and publishes them to RabbitMQ with retries. That converts the two-system commit into one atomic DB write plus an idempotent publish, giving at-least-once delivery without the orphan-order failure mode. Left out for the demo because it's a meaningful chunk of code (outbox table, polling pump, dedupe on the consumer) and the dual-write window is small enough to be a known-but-accepted risk at this scale.
+- **Split API and worker into separate services.** The queue already decouples them — the API only needs to write to the DB and publish, the worker only needs to consume and process. Today they're packaged in one process for the demo's sake, but moving the `OrderConsumer` + `OrderProcessor` into a second deployment unit (sharing only the EF model and message contract via a small `OrderProcessing.Contracts` library) would let you scale them independently (HTTP traffic is spiky, background work is steady), restart them independently (a worker crash doesn't take the API down), and give each its own resource budget. Minimal code change — mostly a project-split refactor.
+- **Idempotency keys on `POST /api/orders`.** Accept an `Idempotency-Key` header and store the (key → order ID) mapping so a client retry on a network blip returns the original order instead of creating a duplicate.
+- **Processing-latency histogram.** Add `orders_processing_seconds` around `ProcessAsync` so the metric story includes p50/p95/p99 timings, not just counters.
+- **EF migrations instead of `EnsureCreated`.** Real schema evolution requires `dotnet ef migrations add` + `MigrateAsync` on startup.
+
 ## Project layout
 
 ```
