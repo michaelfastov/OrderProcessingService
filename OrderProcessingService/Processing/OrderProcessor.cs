@@ -11,9 +11,16 @@ namespace OrderProcessingService.Processing;
 ///   2. Verify the client-declared TotalAmount equals Σ (UnitPrice × Quantity).
 ///   3. Calculate a tier discount based on the order total.
 ///   4. Mark the order as Processed (or Failed) and persist.
+///
+/// All DB writes during a single attempt are wrapped in a transaction so that
+/// a mid-flight failure can roll back atomically (no partial inventory drift,
+/// no leftover Processing state).
 /// </summary>
 public class OrderProcessor
 {
+    /// <summary>Cents-level tolerance to absorb harmless rounding drift between client and server.</summary>
+    private const decimal TotalTolerance = 0.01m;
+
     private readonly AppDbContext _db;
     private readonly ILogger<OrderProcessor> _logger;
 
@@ -41,15 +48,21 @@ public class OrderProcessor
             return;
         }
 
+        // Commit "Processing" eagerly (outside the transaction) so the state is
+        // observable to anyone polling the order — even if the work below fails
+        // and the transaction rolls back.
         order.Status = OrderStatus.Processing;
         await _db.SaveChangesAsync(ct);
 
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
         try
         {
             // Simulated work to make the async nature visible during demos.
             await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
 
             await ProcessOrderItemsAsync(order, ct);
+
+            await tx.CommitAsync(ct);
 
             OrderMetrics.ProcessedOrders.Inc();
             _logger.LogInformation(
@@ -58,30 +71,14 @@ public class OrderProcessor
         }
         catch (Exception ex)
         {
-            // Drop any partially-applied tracked changes (e.g. mid-loop inventory decrements)
-            // so the failure save only writes the Failed state on the order row itself.
-            foreach (var entry in _db.ChangeTracker.Entries().ToList())
-                entry.State = EntityState.Detached;
-
-            var freshOrder = await _db.Orders.FirstOrDefaultAsync(o => o.Id == orderId, CancellationToken.None);
-            if (freshOrder is not null)
-            {
-                freshOrder.Status = OrderStatus.Failed;
-                freshOrder.FailureReason = Truncate(ex.Message, 512);
-                freshOrder.ProcessedAt = DateTime.UtcNow;
-                await _db.SaveChangesAsync(CancellationToken.None);
-            }
+            await tx.RollbackAsync(CancellationToken.None);
+            await RecordFailureAsync(orderId, ex);
 
             OrderMetrics.FailedOrders.Inc();
             _logger.LogError(ex, "Failed to process order {OrderId}", orderId);
             // Swallow — the failure is already persisted and counted.
         }
     }
-
-    /// <summary>
-    /// Cents-level tolerance to absorb harmless rounding drift between client and server.
-    /// </summary>
-    private const decimal TotalTolerance = 0.01m;
 
     private async Task ProcessOrderItemsAsync(Order order, CancellationToken ct)
     {
@@ -118,7 +115,7 @@ public class OrderProcessor
             inventory[item.Sku].StockQuantity -= item.Quantity;
         }
 
-        // 4: discount tier on the verified total.
+        // 4: discount tier on the verified total + mark Processed.
         var discount = CalculateDiscount(computedTotal);
         order.TotalAmount = computedTotal;
         order.DiscountAmount = discount;
@@ -127,6 +124,24 @@ public class OrderProcessor
         order.ProcessedAt = DateTime.UtcNow;
 
         await _db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Persists the Failed status on the order. Called after the main transaction
+    /// has been rolled back, so we first clear the tracker (the rolled-back DB
+    /// writes are gone but their in-memory dirty state would otherwise be re-saved).
+    /// </summary>
+    private async Task RecordFailureAsync(Guid orderId, Exception ex)
+    {
+        _db.ChangeTracker.Clear();
+
+        var fresh = await _db.Orders.FirstOrDefaultAsync(o => o.Id == orderId, CancellationToken.None);
+        if (fresh is null) return;
+
+        fresh.Status = OrderStatus.Failed;
+        fresh.FailureReason = Truncate(ex.Message, 512);
+        fresh.ProcessedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync(CancellationToken.None);
     }
 
     private static decimal CalculateDiscount(decimal total) => total switch
