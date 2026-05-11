@@ -25,43 +25,39 @@ A small .NET 8 microservice that accepts orders over HTTP and processes them asy
 
 ## How to run
 
-The service is containerized; PostgreSQL and RabbitMQ are expected to be reachable on the network. The fastest local setup is to run them in containers next to the service.
+### Recommended — `docker compose up`
 
-### 1. Start Postgres + RabbitMQ
+A `docker-compose.yml` is included at the repo root that brings up the API together with PostgreSQL and RabbitMQ.
 
 ```bash
-docker network create orders-net
-
-docker run -d --name orders-postgres --network orders-net \
-  -e POSTGRES_DB=orders -e POSTGRES_USER=orders -e POSTGRES_PASSWORD=orders \
-  -p 5432:5432 postgres:16-alpine
-
-docker run -d --name orders-rabbit --network orders-net \
-  -p 5672:5672 -p 15672:15672 rabbitmq:3.13-management
+docker compose up --build
 ```
 
-RabbitMQ management UI: <http://localhost:15672> (guest/guest).
+The API waits for both dependencies to pass their healthchecks before starting. Once up:
 
-### 2. Build and run the service
+- Swagger:   <http://localhost:8080/swagger>
+- Metrics:   <http://localhost:8080/metrics>
+- Health:    <http://localhost:8080/health>
+- RabbitMQ:  <http://localhost:15672> (guest/guest)
+- Postgres:  `localhost:5432` (orders / orders / orders)
+
+To tear it all down (and wipe the Postgres volume):
 
 ```bash
-docker build -t order-processing-service .
-
-docker run --rm --name orders-api --network orders-net -p 8080:8080 \
-  -e ConnectionStrings__Postgres="Host=orders-postgres;Port=5432;Database=orders;Username=orders;Password=orders" \
-  -e RabbitMq__Host=orders-rabbit \
-  -e ASPNETCORE_ENVIRONMENT=Development \
-  order-processing-service
+docker compose down -v
 ```
 
-Swagger: <http://localhost:8080/swagger>
-Metrics: <http://localhost:8080/metrics>
-Health:  <http://localhost:8080/health>
+### Alternative — run the API locally with `dotnet run`
 
-### Alternative — run locally with `dotnet run`
+Start just the infrastructure containers via compose:
 
 ```bash
-# Bring up Postgres + RabbitMQ as above, then:
+docker compose up -d postgres rabbitmq
+```
+
+Then run the API from the repo:
+
+```bash
 cd OrderProcessingService
 dotnet run
 ```
