@@ -17,6 +17,12 @@ public class OrderConsumer : BackgroundService
     private readonly ILogger<OrderConsumer> _logger;
     private IModel? _channel;
 
+    // IModel (the RabbitMQ channel) is not thread-safe. With ConsumerDispatchConcurrency > 1
+    // multiple handlers can complete simultaneously and race on BasicAck/BasicNack.
+    // The protected operations are microsecond-scale, so a plain lock is the right tool
+    // (lower overhead than SemaphoreSlim for a critical section this short).
+    private readonly object _channelLock = new();
+
     public OrderConsumer(
         RabbitMqConnection connection,
         IServiceScopeFactory scopeFactory,
@@ -56,7 +62,10 @@ public class OrderConsumer : BackgroundService
             var processor = scope.ServiceProvider.GetRequiredService<OrderProcessor>();
             await processor.ProcessAsync(message.OrderId, CancellationToken.None);
 
-            _channel!.BasicAck(ea.DeliveryTag, multiple: false);
+            lock (_channelLock)
+            {
+                _channel!.BasicAck(ea.DeliveryTag, multiple: false);
+            }
         }
         catch (Exception ex)
         {
@@ -66,7 +75,10 @@ public class OrderConsumer : BackgroundService
 
             // Reject without requeue — failure is already persisted on the order row.
             // In a real system this would route to a DLQ.
-            _channel!.BasicNack(ea.DeliveryTag, multiple: false, requeue: false);
+            lock (_channelLock)
+            {
+                _channel!.BasicNack(ea.DeliveryTag, multiple: false, requeue: false);
+            }
         }
     }
 

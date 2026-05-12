@@ -39,6 +39,10 @@ public sealed class RabbitMqConnection : IDisposable
                 UserName = _options.User,
                 Password = _options.Password,
                 DispatchConsumersAsync = true,
+                // Dispatch up to N consumer events concurrently per consumer.
+                // Without this the async dispatcher uses a single worker and processes
+                // messages sequentially even if prefetchCount > 1.
+                ConsumerDispatchConcurrency = 5,
                 AutomaticRecoveryEnabled = true,
                 NetworkRecoveryInterval = TimeSpan.FromSeconds(5)
             };
