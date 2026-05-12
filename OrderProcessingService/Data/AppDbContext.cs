@@ -41,7 +41,6 @@ public class AppDbContext : DbContext
             e.HasKey(i => i.Id);
             e.Property(i => i.Sku).IsRequired().HasMaxLength(64);
             e.Property(i => i.Name).IsRequired().HasMaxLength(256);
-            e.Property(i => i.UnitPrice).HasColumnType("numeric(18,2)");
             e.HasIndex(i => i.Sku).IsUnique();
         });
     }

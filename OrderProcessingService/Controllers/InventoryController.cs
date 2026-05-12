@@ -19,7 +19,7 @@ public class InventoryController : ControllerBase
         var items = await _db.Inventory
             .AsNoTracking()
             .OrderBy(i => i.Sku)
-            .Select(i => new { i.Sku, i.Name, i.StockQuantity, i.UnitPrice })
+            .Select(i => new { i.Sku, i.Name, i.StockQuantity })
             .ToListAsync(ct);
 
         return Ok(items);

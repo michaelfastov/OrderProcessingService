@@ -23,10 +23,10 @@ public static class DbInitializer
         {
             logger.LogInformation("Seeding inventory");
             db.Inventory.AddRange(
-                new Inventory { Id = Guid.NewGuid(), Sku = "SKU-001", Name = "Wireless Mouse",   StockQuantity = 50,  UnitPrice = 24.99m },
-                new Inventory { Id = Guid.NewGuid(), Sku = "SKU-002", Name = "Mechanical Keyboard", StockQuantity = 25, UnitPrice = 89.50m },
-                new Inventory { Id = Guid.NewGuid(), Sku = "SKU-003", Name = "27\" Monitor",     StockQuantity = 10,  UnitPrice = 329.00m },
-                new Inventory { Id = Guid.NewGuid(), Sku = "SKU-004", Name = "USB-C Hub",         StockQuantity = 100, UnitPrice = 39.00m }
+                new Inventory { Id = Guid.NewGuid(), Sku = "SKU-001", Name = "Wireless Mouse",      StockQuantity = 50  },
+                new Inventory { Id = Guid.NewGuid(), Sku = "SKU-002", Name = "Mechanical Keyboard", StockQuantity = 25  },
+                new Inventory { Id = Guid.NewGuid(), Sku = "SKU-003", Name = "27\" Monitor",        StockQuantity = 10  },
+                new Inventory { Id = Guid.NewGuid(), Sku = "SKU-004", Name = "USB-C Hub",           StockQuantity = 100 }
             );
             await db.SaveChangesAsync(ct);
         }

@@ -130,7 +130,7 @@ Inventory is seeded on first startup with four products (`SKU-001` … `SKU-004`
 ## Assumptions
 
 - `CustomerId` is an opaque string — no separate Customer entity or auth.
-- The client supplies both `UnitPrice` per item and the order `TotalAmount`. The worker accepts these but verifies internal consistency (`Σ unitPrice × quantity == totalAmount`). It does **not** cross-check prices against `Inventory` — inventory is the source of truth for *stock*, not price. Cross-checking against an inventory price would be a one-line addition if desired.
+- The client supplies both `UnitPrice` per item and the order `TotalAmount`. The worker accepts these but verifies internal consistency (`Σ unitPrice × quantity == totalAmount`). `Inventory` is the source of truth for **stock only** — pricing lives entirely on the order payload.
 - Inventory is seeded once on first startup with four sample SKUs. There is no admin endpoint to mutate it — kept out for scope.
 - Only happy-path retries: RabbitMQ's automatic recovery handles transient connection drops; a failed *message* is not re-queued (see above).
 - "Database" connection failures at startup will crash the app — fine for a demo, in production you'd add a connection-retry policy (Polly + `EnableRetryOnFailure`).
