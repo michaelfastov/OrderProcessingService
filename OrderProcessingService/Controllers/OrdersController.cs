@@ -76,4 +76,40 @@ public class OrdersController : ControllerBase
 
         return order is null ? NotFound() : Ok(OrderResponse.From(order));
     }
+
+    /// <summary>
+    /// Lists orders newest-first with simple paging and optional status / customer filters.
+    /// </summary>
+    /// <param name="limit">Page size (1–200, default 50).</param>
+    /// <param name="offset">Number of rows to skip (default 0).</param>
+    /// <param name="status">Optional status filter (Pending, Processing, Processed, Failed).</param>
+    /// <param name="customerId">Optional exact-match customer filter.</param>
+    [HttpGet]
+    [ProducesResponseType(typeof(IEnumerable<OrderResponse>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> List(
+        [FromQuery] int limit = 50,
+        [FromQuery] int offset = 0,
+        [FromQuery] OrderStatus? status = null,
+        [FromQuery] string? customerId = null,
+        CancellationToken ct = default)
+    {
+        limit = Math.Clamp(limit, 1, 200);
+        if (offset < 0) offset = 0;
+
+        var query = _db.Orders.AsNoTracking();
+
+        if (status is not null)
+            query = query.Where(o => o.Status == status);
+        if (!string.IsNullOrWhiteSpace(customerId))
+            query = query.Where(o => o.CustomerId == customerId);
+
+        var orders = await query
+            .Include(o => o.Items)
+            .OrderByDescending(o => o.CreatedAt)
+            .Skip(offset)
+            .Take(limit)
+            .ToListAsync(ct);
+
+        return Ok(orders.Select(OrderResponse.From));
+    }
 }

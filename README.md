@@ -93,6 +93,19 @@ curl http://localhost:8080/api/orders/<id>
 
 Status transitions: `Pending → Processing → Processed` (or `Failed` with `failureReason`).
 
+### List orders
+
+```bash
+# newest first, default page size = 50
+curl "http://localhost:8080/api/orders"
+
+# paging
+curl "http://localhost:8080/api/orders?limit=10&offset=0"
+
+# filter by status (Pending | Processing | Processed | Failed) and/or customer
+curl "http://localhost:8080/api/orders?status=Processed&customerId=cust-123"
+```
+
 ### List inventory (handy for picking valid SKUs)
 
 ```bash
